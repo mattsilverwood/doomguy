@@ -1,0 +1,130 @@
+//! doomguy::wad
+//!
+//! This module pertains to the vanilla WAD format.
+
+use anyhow::{Context, Result};
+use std::{
+    ffi::CStr,
+    fs::File,
+    io::{BufReader, Read, Seek},
+    path::{Path, PathBuf},
+};
+
+/// Definition of a WADs type, which can either be IWAD or PWAD.
+/// If unrecognised, default is PWAD. Most source ports do not consider this vital
+#[derive(Debug)]
+pub enum WadType {
+    /// Internal WAD variant, used for base game assets (doom.WAD, doom2.WAD, freedoom.WAD, etc.)
+    IWAD,
+    /// Patch WAD variant, used for mods that are overlayed (patched) onto an IWAD and cannot be ran standalone.
+    PWAD,
+}
+
+/// Deserialised WAD header structure, used as a source of truth for the WAD.
+#[derive(Debug)]
+pub struct Header {
+    /// Defines WAD type. See `doomguy::wad::WadType`.
+    pub wad_type: WadType,
+    /// A count of lumps taken from the header directly, not inferred.
+    pub lump_count: i32,
+    /// An offset (in bytes) to the start of a WAD's directory, which then has entries for lump name and contents.
+    /// This field exists solely for parsing, and shouldn't be modified.
+    directory_ptr: i32,
+}
+
+/// A definition of a directory entry found within `doomguy::wad::Wad`.
+#[derive(Debug)]
+struct DirectoryEntry {
+    /// An offset (in bytes) for the offset of lump data within the WAD.
+    /// This field exists solely for parsing, and shouldn't be modified.
+    start_ptr: i32,
+    lump_size: i32,
+    lump_name: String,
+}
+
+/// Overarching representation of a WAD. Contains everything that could be deserialised, as well as a path for future reference.
+#[derive(Debug)]
+pub struct Wad {
+    pub path: Option<PathBuf>,
+    pub header: Header,
+    directory: Vec<DirectoryEntry>,
+    lumps: Vec<Lump>,
+}
+
+#[derive(Debug)]
+pub struct Lump {}
+
+impl Wad {
+    /// Opens and parses the contents of a WAD file.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Wad> {
+        let path = path.as_ref().to_path_buf();
+
+        let mut file = BufReader::new(
+            File::open(&path)
+                .with_context(|| format!("Could not open WAD at {}", path.display()))?,
+        );
+
+        let header = Self::parse_header(&mut file)?;
+
+        // But we will need to seek for the directory, with the pointer provided in the header.
+        file.seek(std::io::SeekFrom::Start(header.directory_ptr as u64))
+            .context("Could not seek to directory pointer.")?;
+        let directory = Self::parse_directory(&mut file)?;
+
+        Ok(Wad {
+            header,
+            path: Some(path),
+            directory,
+        })
+    }
+
+    fn parse_header<R: Read + Seek>(reader: &mut R) -> Result<Header> {
+        let mut header_raw = [0u8; 12];
+
+        reader
+            .read_exact(&mut header_raw)
+            .context("Failed to read WAD header.")?;
+
+        let wad_type = match &header_raw[0..4] {
+            b"IWAD" => WadType::IWAD,
+            b"PWAD" | _ => WadType::PWAD,
+        };
+        let lump_count =
+            i32::from_le_bytes([header_raw[4], header_raw[5], header_raw[6], header_raw[7]]);
+        let directory_ptr =
+            i32::from_le_bytes([header_raw[8], header_raw[9], header_raw[10], header_raw[11]]);
+
+        dbg!(header_raw);
+        Ok(Header {
+            wad_type,
+            lump_count,
+            directory_ptr,
+        })
+    }
+
+    /// Parse the directory as a whole. Assumes R cursor is at start of directory pointer.
+    fn parse_directory<R: Read>(_reader: &mut R) -> Result<Vec<DirectoryEntry>> {
+        todo!();
+    }
+
+    fn parse_directory_entry<R: Read>(reader: &mut R) -> Result<DirectoryEntry> {
+        let mut entry_raw = [0u8; 16];
+
+        reader
+            .read_exact(&mut entry_raw)
+            .context("Failed to read directory entry.")?;
+
+        let start_ptr =
+            i32::from_le_bytes([entry_raw[0], entry_raw[1], entry_raw[2], entry_raw[3]]);
+        let lump_size =
+            i32::from_le_bytes([entry_raw[4], entry_raw[5], entry_raw[6], entry_raw[7]]);
+        let lump_name = CStr::from_bytes_until_nul(&entry_raw[8..16])?;
+
+        Ok((
+            DirectoryEntry {,
+                start_ptr,
+                lump_size,
+            },
+        ))
+    }
+}
